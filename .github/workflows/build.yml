@@ -1,0 +1,60 @@
+name: Build Grimlite AQW Overlay Package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build overlay APK
+        run: gradle assembleDebug
+
+      - name: Download latest official AQW Pocket armv8 APK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+          API_URL="https://api.github.com/repos/anthony-hyo/aqw-mobile/releases/latest"
+          APK_URL=$(curl -s "$API_URL" | jq -r '.assets[] | select(.name | test("armv8.*\\.apk$")) | .browser_download_url' | head -n 1)
+          echo "APK_URL=$APK_URL"
+          test -n "$APK_URL" && test "$APK_URL" != "null"
+          curl -L "$APK_URL" -o AQWPocket-working-armv8.apk
+
+      - name: Prepare APK bundle
+        run: |
+          mkdir -p output
+          cp app/build/outputs/apk/debug/app-debug.apk output/GrimliteRevOverlay.apk
+          cp AQWPocket-working-armv8.apk output/AQWPocket-working-armv8.apk
+          cat > output/INSTALL.txt <<'TXT'
+          Install both APKs:
+          1) AQWPocket-working-armv8.apk = working AQW mobile game base.
+          2) GrimliteRevOverlay.apk = Grimlite-style floating menu overlay.
+
+          Open Grimlite Rev Overlay, grant overlay permission, press Start Grimlite Overlay, then open AQW Pocket.
+          TXT
+          ls -lah output
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: GrimliteRevMobile-package
+          path: output/*
