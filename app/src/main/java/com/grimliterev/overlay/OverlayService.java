@@ -11,10 +11,13 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.view.*;
 import android.widget.*;
-import java.util.ArrayList;
+
+import com.grimliterev.overlay.gbot.*;
+import com.grimliterev.overlay.game.*;
+
 import java.util.Locale;
 
-public class OverlayService extends Service {
+public class OverlayService extends Service implements ScriptExecutor.Callback {
     private WindowManager wm;
     private LinearLayout root;
     private LinearLayout panel;
@@ -24,18 +27,63 @@ public class OverlayService extends Service {
     private TextView currentCommand;
     private SharedPreferences prefs;
     private Handler handler;
-    private final ArrayList<String> commands = new ArrayList<>();
-    private boolean previewRunning = false;
-    private int commandIndex = 0;
+
+    private ScriptExecutor executor;
+    private CoordinateMap coordMap;
 
     @Override public void onCreate() {
         super.onCreate();
         prefs = getSharedPreferences("grimlite_overlay", MODE_PRIVATE);
         handler = new Handler(Looper.getMainLooper());
+        coordMap = new CoordinateMap(prefs);
+
         if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) return;
         startForegroundCompat();
-        reloadScript();
         createOverlay();
+        reloadExecutor();
+    }
+
+    private void reloadExecutor() {
+        GameInteractor interactor = null;
+        BotAccessibilityService svc = BotAccessibilityService.getInstance();
+        if (svc != null && svc.getInteractor() != null) {
+            interactor = svc.getInteractor();
+        }
+        // Fallback: if accessibility not connected, create a dummy that logs taps
+        if (interactor == null) {
+            interactor = new GameInteractor() {
+                @Override public void tap(int x, int y) { logAction("TAP", x, y); }
+                @Override public void swipe(int x1, int y1, int x2, int y2, int d) { logAction("SWIPE", x1, y1); }
+                @Override public void longPress(int x, int y, int d) { logAction("LONG", x, y); }
+                @Override public void kill(String m) { logAction("KILL", m); }
+                @Override public void join(String m) { logAction("JOIN", m); }
+                @Override public void acceptQuest(String q) { logAction("ACCEPT", q); }
+                @Override public void turnInQuest(String q) { logAction("TURNIN", q); }
+                @Override public void rest() { logAction("REST", ""); }
+                @Override public void useSkill(int s) { logAction("SKILL", String.valueOf(s)); }
+                @Override public void move(int x, int y) { logAction("MOVE", x + "," + y); }
+                @Override public void buy(String i) { logAction("BUY", i); }
+                @Override public void sell(String i) { logAction("SELL", i); }
+                @Override public void equip(String i) { logAction("EQUIP", i); }
+                @Override public void unequip(String i) { logAction("UNEQUIP", i); }
+                @Override public boolean getState(String k) { return false; }
+                private void logAction(String a, Object b) {
+                    handler.post(() -> saveStatus("[" + a + "] " + b));
+                }
+            };
+        }
+        executor = new ScriptExecutor(interactor);
+        executor.setCallback(this);
+        loadScriptIntoExecutor();
+    }
+
+    private void loadScriptIntoExecutor() {
+        String scriptText = prefs.getString("script", "");
+        String scriptName = prefs.getString("scriptName", "unnamed");
+        if (!scriptText.isEmpty()) {
+            GbotScript script = GbotParser.parse(scriptName, scriptText);
+            executor.load(script);
+        }
     }
 
     private void startForegroundCompat() {
@@ -44,16 +92,20 @@ public class OverlayService extends Service {
             NotificationChannel ch = new NotificationChannel(id, "Grimlite Overlay", NotificationManager.IMPORTANCE_LOW);
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
-        Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, id) : new Notification.Builder(this);
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26
+            ? new Notification.Builder(this, id)
+            : new Notification.Builder(this);
         b.setContentTitle("Grimlite Overlay running")
-            .setContentText("Floating .gbot script panel is active")
-            .setSmallIcon(android.R.drawable.ic_menu_manage);
+         .setContentText("Floating .gbot script panel is active")
+         .setSmallIcon(android.R.drawable.ic_menu_manage);
         startForeground(1337, b.build());
     }
 
     private void createOverlay() {
-        wm = (WindowManager)getSystemService(WINDOW_SERVICE);
-        int type = Build.VERSION.SDK_INT >= 26 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE;
+        wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+        int type = Build.VERSION.SDK_INT >= 26
+            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            : WindowManager.LayoutParams.TYPE_PHONE;
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -80,9 +132,9 @@ public class OverlayService extends Service {
         panel.setPadding(16, 16, 16, 16);
         panel.setBackgroundColor(Color.argb(235, 18, 18, 18));
         panel.setVisibility(View.GONE);
-        root.addView(panel, new LinearLayout.LayoutParams(920, -2));
+        root.addView(panel, new LinearLayout.LayoutParams(960, -2));
 
-        TextView title = text("Grimlite Rev - .gbot Loader", 18, true);
+        TextView title = text("Grimlite Rev - Script Executor", 18, true);
         panel.addView(title);
 
         status = text("Status: " + prefs.getString("status", "Stopped"), 14, false);
@@ -97,17 +149,21 @@ public class OverlayService extends Service {
         landscapeRow.addView(controls, new LinearLayout.LayoutParams(260, -2));
 
         addButton(controls, "Load .gbot", v -> openLoader());
-        addButton(controls, "Reload Script", v -> { reloadScript(); refreshScriptViews(); saveStatus("Reloaded script"); });
-        addButton(controls, "Start Preview", v -> startPreview());
-        addButton(controls, "Stop", v -> stopPreview("Stopped"));
-        addButton(controls, "Next Command", v -> nextCommand());
+        addButton(controls, "Reload Script", v -> { reloadScript(); saveStatus("Reloaded"); });
+        addButton(controls, "Start Script", v -> {
+            reloadExecutor();
+            executor.start();
+        });
+        addButton(controls, "Stop", v -> executor.stop("Stopped by user"));
+        addButton(controls, "Next Command", v -> executor.next());
+        addButton(controls, "Set Coords", v -> openCoordSetup());
         addButton(controls, "Save Config", v -> saveConfig());
         addButton(controls, "Hide", v -> panel.setVisibility(View.GONE));
 
         LinearLayout scriptPanel = new LinearLayout(this);
         scriptPanel.setOrientation(LinearLayout.VERTICAL);
         scriptPanel.setPadding(16, 0, 0, 0);
-        landscapeRow.addView(scriptPanel, new LinearLayout.LayoutParams(620, -2));
+        landscapeRow.addView(scriptPanel, new LinearLayout.LayoutParams(660, -2));
 
         scriptHeader = text("No script loaded", 14, true);
         scriptPanel.addView(scriptHeader);
@@ -120,12 +176,19 @@ public class OverlayService extends Service {
         scriptPreview = text("Use Load .gbot to select a Grimlite .gbot file.", 12, false);
         scriptPreview.setTextIsSelectable(false);
         previewScroll.addView(scriptPreview);
-        scriptPanel.addView(previewScroll, new LinearLayout.LayoutParams(600, 300));
+        scriptPanel.addView(previewScroll, new LinearLayout.LayoutParams(640, 320));
 
         refreshScriptViews();
         menu.setOnClickListener(v -> panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
         makeDraggable(menu, lp);
         wm.addView(root, lp);
+    }
+
+    private void openCoordSetup() {
+        Intent i = new Intent(this, MainActivity.class);
+        i.setAction("coord_setup");
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(i);
     }
 
     private void makeDraggable(View drag, WindowManager.LayoutParams lp) {
@@ -177,76 +240,53 @@ public class OverlayService extends Service {
     }
 
     private void reloadScript() {
-        commands.clear();
-        String script = prefs.getString("script", "");
-        String[] lines = script.split("\\r?\\n");
-        for (String line : lines) {
-            String t = cleanLine(line);
-            if (t.length() > 0) commands.add(t);
-        }
-        if (commandIndex >= commands.size()) commandIndex = 0;
-    }
-
-    private String cleanLine(String line) {
-        String t = line.trim();
-        if (t.length() == 0) return "";
-        if (t.startsWith("//") || t.startsWith("#") || t.startsWith(";") || t.startsWith("--")) return "";
-        return t;
+        loadScriptIntoExecutor();
+        refreshScriptViews();
     }
 
     private void refreshScriptViews() {
         if (scriptHeader == null) return;
         String name = prefs.getString("scriptName", "No .gbot loaded");
         int lines = prefs.getInt("scriptLineCount", 0);
-        int count = commands.size();
-        scriptHeader.setText("Script: " + name + "  | Lines: " + lines + " | Commands: " + count);
+        int count = (executor != null && executor.isRunning()) ? 1 : 0;
+        if (executor != null && executor.isRunning()) {
+            // count from executor script if available
+        }
+        scriptHeader.setText("Script: " + name + " | Lines: " + lines);
         scriptPreview.setText(buildPreview());
-        currentCommand.setText(commandIndex < commands.size() ? "Current: " + commands.get(commandIndex) : "Current: -");
+        currentCommand.setText("Current: -");
     }
 
     private String buildPreview() {
-        if (commands.size() == 0) return "No commands loaded. Tap Load .gbot.";
+        if (executor == null) return "No executor.";
+        GbotScript script = getScriptFromExecutor();
+        if (script == null || script.commands.isEmpty()) return "No commands loaded. Tap Load .gbot.";
         StringBuilder sb = new StringBuilder();
-        int max = Math.min(commands.size(), 80);
+        int max = Math.min(script.commands.size(), 80);
         for (int i = 0; i < max; i++) {
-            sb.append(String.format(Locale.US, "%03d  %s", i + 1, commands.get(i)));
-            if (i == commandIndex) sb.append("   < current");
-            sb.append('\n');
+            sb.append(String.format(Locale.US, "%03d %s", i + 1, script.commands.get(i).raw));
+            sb.append('
+');
         }
-        if (commands.size() > max) sb.append("... ").append(commands.size() - max).append(" more commands");
+        if (script.commands.size() > max) sb.append("... ").append(script.commands.size() - max).append(" more commands");
         return sb.toString();
     }
 
-    private void startPreview() {
-        if (commands.size() == 0) { saveStatus("No .gbot loaded"); return; }
-        previewRunning = true;
-        saveStatus("Preview running");
-        handler.post(previewTick);
+    private GbotScript getScriptFromExecutor() {
+        // Access script via reflection or store locally; here we re-parse for preview
+        String scriptText = prefs.getString("script", "");
+        String scriptName = prefs.getString("scriptName", "unnamed");
+        if (scriptText.isEmpty()) return null;
+        return GbotParser.parse(scriptName, scriptText);
     }
 
-    private void stopPreview(String reason) {
-        previewRunning = false;
-        handler.removeCallbacks(previewTick);
-        saveStatus(reason);
+    @Override public void onStatus(String s) { saveStatus(s); }
+    @Override public void onCommand(int idx, String raw) {
+        currentCommand.setText("Current [" + idx + "]: " + raw);
     }
-
-    private final Runnable previewTick = new Runnable() {
-        @Override public void run() {
-            if (!previewRunning) return;
-            nextCommand();
-            handler.postDelayed(this, 900);
-        }
-    };
-
-    private void nextCommand() {
-        if (commands.size() == 0) { saveStatus("No .gbot loaded"); return; }
-        currentCommand.setText("Current: " + commands.get(commandIndex));
-        scriptPreview.setText(buildPreview());
-        commandIndex++;
-        if (commandIndex >= commands.size()) {
-            commandIndex = 0;
-            stopPreview("Preview complete");
-        }
+    @Override public void onFinished(String reason) {
+        saveStatus("Finished: " + reason);
+        currentCommand.setText("Current: -");
     }
 
     private void saveStatus(String s) {
@@ -255,15 +295,12 @@ public class OverlayService extends Service {
     }
 
     private void saveConfig() {
-        prefs.edit()
-            .putString("status", status.getText().toString().replace("Status: ", ""))
-            .putInt("commandIndex", commandIndex)
-            .apply();
+        prefs.edit().putString("status", status.getText().toString().replace("Status: ", "")).apply();
         saveStatus("Saved");
     }
 
     @Override public void onDestroy() {
-        previewRunning = false;
+        if (executor != null) executor.stop("Service destroyed");
         if (handler != null) handler.removeCallbacksAndMessages(null);
         if (wm != null && root != null) wm.removeView(root);
         super.onDestroy();
