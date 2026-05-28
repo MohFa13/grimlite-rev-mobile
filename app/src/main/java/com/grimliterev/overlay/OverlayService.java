@@ -49,12 +49,11 @@ public class OverlayService extends Service implements ScriptExecutor.Callback {
         if (svc != null && svc.getInteractor() != null) {
             interactor = svc.getInteractor();
         }
-        // Fallback: if accessibility not connected, create a dummy that logs taps
         if (interactor == null) {
             interactor = new GameInteractor() {
-                @Override public void tap(int x, int y) { logAction("TAP", x, y); }
-                @Override public void swipe(int x1, int y1, int x2, int y2, int d) { logAction("SWIPE", x1, y1); }
-                @Override public void longPress(int x, int y, int d) { logAction("LONG", x, y); }
+                @Override public void tap(int x, int y) { logAction("TAP", x + "," + y); }
+                @Override public void swipe(int x1, int y1, int x2, int y2, int d) { logAction("SWIPE", x1 + "," + y1); }
+                @Override public void longPress(int x, int y, int d) { logAction("LONG", x + "," + y); }
                 @Override public void kill(String m) { logAction("KILL", m); }
                 @Override public void join(String m) { logAction("JOIN", m); }
                 @Override public void acceptQuest(String q) { logAction("ACCEPT", q); }
@@ -67,7 +66,7 @@ public class OverlayService extends Service implements ScriptExecutor.Callback {
                 @Override public void equip(String i) { logAction("EQUIP", i); }
                 @Override public void unequip(String i) { logAction("UNEQUIP", i); }
                 @Override public boolean getState(String k) { return false; }
-                private void logAction(String a, Object b) {
+                private void logAction(String a, String b) {
                     handler.post(() -> saveStatus("[" + a + "] " + b));
                 }
             };
@@ -248,10 +247,6 @@ public class OverlayService extends Service implements ScriptExecutor.Callback {
         if (scriptHeader == null) return;
         String name = prefs.getString("scriptName", "No .gbot loaded");
         int lines = prefs.getInt("scriptLineCount", 0);
-        int count = (executor != null && executor.isRunning()) ? 1 : 0;
-        if (executor != null && executor.isRunning()) {
-            // count from executor script if available
-        }
         scriptHeader.setText("Script: " + name + " | Lines: " + lines);
         scriptPreview.setText(buildPreview());
         currentCommand.setText("Current: -");
@@ -265,15 +260,13 @@ public class OverlayService extends Service implements ScriptExecutor.Callback {
         int max = Math.min(script.commands.size(), 80);
         for (int i = 0; i < max; i++) {
             sb.append(String.format(Locale.US, "%03d %s", i + 1, script.commands.get(i).raw));
-            sb.append('
-');
+            sb.append('\n');
         }
         if (script.commands.size() > max) sb.append("... ").append(script.commands.size() - max).append(" more commands");
         return sb.toString();
     }
 
     private GbotScript getScriptFromExecutor() {
-        // Access script via reflection or store locally; here we re-parse for preview
         String scriptText = prefs.getString("script", "");
         String scriptName = prefs.getString("scriptName", "unnamed");
         if (scriptText.isEmpty()) return null;

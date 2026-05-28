@@ -24,7 +24,6 @@ import com.grimliterev.overlay.gbot.GbotScript;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.util.Map;
 
 public class MainActivity extends Activity {
     private static final int PICK_GBOT_FILE = 2001;
@@ -50,7 +49,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    // =================== MAIN LAYOUT ===================
     private void buildMainLayout() {
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
@@ -105,7 +103,6 @@ public class MainActivity extends Activity {
         root.addView(scriptInfo, new LinearLayout.LayoutParams(-1, -2));
     }
 
-    // =================== COORDINATE SETUP ===================
     private void buildCoordSetup() {
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
@@ -121,7 +118,7 @@ public class MainActivity extends Activity {
         root.addView(title);
 
         TextView desc = new TextView(this);
-        desc.setText("Set screen tap coordinates for AQW Pocket actions. Values are in screen pixels. Use a screen coordinate app or developer options to find positions.");
+        desc.setText("Set screen tap coordinates for AQW Pocket actions. Values are in screen pixels. Use Android Developer Options -> Pointer Location to find coordinates.");
         desc.setTextSize(14);
         desc.setPadding(0, 12, 0, 12);
         root.addView(desc);
@@ -242,8 +239,7 @@ public class MainActivity extends Activity {
             refreshScriptInfo();
             Toast.makeText(this, "Loaded " + name + " (" + script.commands.size() + " commands)", Toast.LENGTH_SHORT).show();
         } catch (Exception ex) {
-            scriptInfo.setText("Failed to load .gbot file:
-" + ex.getMessage());
+            scriptInfo.setText("Failed to load .gbot file:\n" + ex.getMessage());
         }
     }
 
@@ -251,8 +247,7 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         int max = Math.min(script.commands.size(), 40);
         for (int i = 0; i < max; i++) {
-            sb.append(String.format(java.util.Locale.US, "%03d %s
-", i + 1, script.commands.get(i).raw));
+            sb.append(String.format(java.util.Locale.US, "%03d %s\n", i + 1, script.commands.get(i).raw));
         }
         if (script.commands.size() > max) sb.append("... ").append(script.commands.size() - 40).append(" more commands");
         return sb.toString();
@@ -274,8 +269,7 @@ public class MainActivity extends Activity {
         try (InputStream in = getContentResolver().openInputStream(uri);
              BufferedReader br = new BufferedReader(new InputStreamReader(in))) {
             String line;
-            while ((line = br.readLine()) != null) sb.append(line).append('
-');
+            while ((line = br.readLine()) != null) sb.append(line).append('\n');
         }
         return sb.toString();
     }
@@ -285,12 +279,7 @@ public class MainActivity extends Activity {
         int lines = prefs.getInt("scriptLineCount", 0);
         int commands = prefs.getInt("scriptCommandCount", 0);
         String summary = prefs.getString("scriptSummary", "");
-        scriptInfo.setText("Loaded Script: " + name + "
-Lines: " + lines + "
-Commands: " + commands + "
-
-Command Preview:
-" + summary);
+        scriptInfo.setText("Loaded Script: " + name + "\nLines: " + lines + "\nCommands: " + commands + "\n\nCommand Preview:\n" + summary);
     }
 
     private void openAqwPocket() {
