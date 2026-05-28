@@ -1,453 +1,193 @@
 package com.grimliterev.overlay;
 
-import android.app.*;
-import android.content.*;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Color;
-import android.graphics.PixelFormat;
-import android.os.Build;
-import android.os.Handler;
-import android.os.IBinder;
-import android.os.Looper;
+import android.net.Uri;
+import android.os.Bundle;
 import android.provider.Settings;
-import android.util.Log;
-import android.view.*;
-import android.widget.*;
+import android.view.Gravity;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.Toast;
 
-import com.grimliterev.overlay.gbot.*;
-import com.grimliterev.overlay.game.*;
+import com.grimliterev.overlay.game.CoordinateMap;
 
-import java.util.Locale;
-
-public class OverlayService extends Service implements ScriptExecutor.Callback {
-    private static final String TAG = "OverlayService";
-    private static final int NOTIF_ID = 1337;
-    private static final String CHAN_ID = "grimlite_overlay";
-
-    private WindowManager wm;
-    private LinearLayout root;
-    private LinearLayout panel;
-    private TextView status;
-    private TextView scriptHeader;
-    private TextView scriptPreview;
-    private TextView currentCommand;
+public class MainActivity extends Activity {
     private SharedPreferences prefs;
-    private Handler handler;
+    private LinearLayout rootLayout;
 
-    private ScriptExecutor executor;
-    private CoordinateMap coordMap;
-    private boolean isOverlayActive = false;
-
-    @Override public void onCreate() {
-        super.onCreate();
-        Log.i(TAG, "onCreate");
+    @Override
+    protected void onCreate(Bundle b) {
+        super.onCreate(b);
         prefs = getSharedPreferences("grimlite_overlay", MODE_PRIVATE);
-        handler = new Handler(Looper.getMainLooper());
-        coordMap = new CoordinateMap(prefs);
+        rootLayout = new LinearLayout(this);
+        rootLayout.setOrientation(LinearLayout.VERTICAL);
+        setContentView(rootLayout);
 
-        if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
-            Log.e(TAG, "Overlay permission NOT granted");
-            Toast.makeText(this, "Overlay permission required! Open the app and grant it.", Toast.LENGTH_LONG).show();
-            stopSelf();
-            return;
+        String action = getIntent().getAction();
+        if ("coord_setup".equals(action)) {
+            buildCoordSetup();
+        } else {
+            buildMainLayout();
         }
-
-        try {
-            startForegroundCompat();
-        } catch (Exception e) {
-            Log.e(TAG, "startForeground failed", e);
-            stopSelf();
-            return;
-        }
-
-        try {
-            createOverlay();
-        } catch (Exception e) {
-            Log.e(TAG, "createOverlay failed", e);
-            stopSelf();
-            return;
-        }
-
-        reloadExecutor();
     }
 
-    @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        Log.i(TAG, "onStartCommand flags=" + flags + " startId=" + startId);
-        // If service is already running, just make sure overlay is visible
-        if (root != null && root.getParent() == null && wm != null) {
-            try {
-                int type = Build.VERSION.SDK_INT >= 26
-                    ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                    : WindowManager.LayoutParams.TYPE_PHONE;
-                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.WRAP_CONTENT,
-                    WindowManager.LayoutParams.WRAP_CONTENT,
-                    type,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                    PixelFormat.TRANSLUCENT
-                );
-                lp.gravity = Gravity.TOP | Gravity.START;
-                lp.x = prefs.getInt("x", 24);
-                lp.y = prefs.getInt("y", 80);
-                wm.addView(root, lp);
-                isOverlayActive = true;
-            } catch (Exception e) {
-                Log.e(TAG, "Re-adding overlay failed", e);
-            }
-        }
-        return START_STICKY;
+    private void buildMainLayout() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(40, 28, 40, 28);
+        root.setGravity(Gravity.CENTER_HORIZONTAL);
+        scroll.addView(root);
+        rootLayout.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
+
+        TextView title = new TextView(this);
+        title.setText("Grimlite Rev");
+        title.setTextSize(24);
+        title.setTextColor(Color.rgb(30, 30, 30));
+        title.setGravity(Gravity.CENTER);
+        root.addView(title, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView desc = new TextView(this);
+        desc.setText("Setup:\n1. Enable Accessibility Service\n2. Grant Overlay Permission\n3. Set Coordinates\n4. Open AQW Pocket — popup will appear automatically");
+        desc.setTextSize(15);
+        desc.setPadding(0, 18, 0, 18);
+        root.addView(desc, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout btns = new LinearLayout(this);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        btns.setGravity(Gravity.CENTER);
+        root.addView(btns, new LinearLayout.LayoutParams(-1, -2));
+
+        btns.addView(btn("Enable Accessibility", v -> {
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            Toast.makeText(this, "Turn on Grimlite Bot Accessibility Service", Toast.LENGTH_LONG).show();
+        }));
+        btns.addView(btn("Grant Overlay", v -> {
+            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
+        }));
+        btns.addView(btn("Set Coords", v -> {
+            Intent i = new Intent(this, MainActivity.class);
+            i.setAction("coord_setup");
+            startActivity(i);
+        }));
+        btns.addView(btn("Open AQW Pocket", v -> openAqwPocket()));
+
+        TextView diag = new TextView(this);
+        diag.setText(DiagnosticsHelper.getDiagnostics(this));
+        diag.setTextSize(13);
+        diag.setTextColor(Color.rgb(180, 0, 0));
+        diag.setBackgroundColor(Color.rgb(255, 245, 245));
+        diag.setPadding(16, 16, 16, 16);
+        root.addView(diag, new LinearLayout.LayoutParams(-1, -2));
     }
 
-    private void startForegroundCompat() {
-        try {
-            if (Build.VERSION.SDK_INT >= 26) {
-                NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-                if (nm != null) {
-                    NotificationChannel ch = nm.getNotificationChannel(CHAN_ID);
-                    if (ch == null) {
-                        ch = new NotificationChannel(CHAN_ID, "Grimlite Overlay", NotificationManager.IMPORTANCE_LOW);
-                        nm.createNotificationChannel(ch);
-                    }
+    private void buildCoordSetup() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(40, 28, 40, 28);
+        scroll.addView(root);
+        rootLayout.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
+
+        TextView title = new TextView(this);
+        title.setText("Coordinate Setup");
+        title.setTextSize(22);
+        title.setTextColor(Color.rgb(30, 30, 30));
+        root.addView(title);
+
+        CoordinateMap map = new CoordinateMap(prefs);
+        String[] actions = {
+            "attack", "skill1", "skill2", "skill3", "skill4",
+            "rest", "menu", "join", "confirm",
+            "quest", "accept", "turnin",
+            "shop", "buy", "sell",
+            "inventory", "equip", "unequip"
+        };
+
+        for (String action : actions) {
+            int[] p = map.get(action);
+            root.addView(makeCoordRow(action, p[0], p[1]));
+        }
+
+        Button save = new Button(this);
+        save.setText("Save All Coordinates");
+        save.setOnClickListener(v -> {
+            for (int i = 0; i < root.getChildCount(); i++) {
+                android.view.View child = root.getChildAt(i);
+                if (child instanceof LinearLayout) {
+                    LinearLayout row = (LinearLayout) child;
+                    TextView label = (TextView) row.getChildAt(0);
+                    EditText ex = (EditText) row.getChildAt(1);
+                    EditText ey = (EditText) row.getChildAt(2);
+                    String act = label.getText().toString().replace(":", "").trim();
+                    int x = parseInt(ex.getText().toString(), -1);
+                    int y = parseInt(ey.getText().toString(), -1);
+                    if (x >= 0 && y >= 0) map.set(act, x, y);
                 }
             }
-
-            Notification.Builder b;
-            if (Build.VERSION.SDK_INT >= 26) {
-                b = new Notification.Builder(this, CHAN_ID);
-            } else {
-                b = new Notification.Builder(this);
-            }
-            b.setContentTitle("Grimlite Overlay running")
-             .setContentText("Floating .gbot script panel is active")
-             .setSmallIcon(android.R.drawable.ic_menu_manage)
-             .setOngoing(true);
-
-            startForeground(NOTIF_ID, b.build());
-            Log.i(TAG, "startForeground OK");
-        } catch (Exception e) {
-            Log.e(TAG, "startForegroundCompat exception", e);
-            throw e;
-        }
-    }
-
-    private void createOverlay() {
-        wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        if (wm == null) {
-            throw new IllegalStateException("WindowManager is null");
-        }
-
-        int type = Build.VERSION.SDK_INT >= 26
-            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            : WindowManager.LayoutParams.TYPE_PHONE;
-
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            PixelFormat.TRANSLUCENT
-        );
-        lp.gravity = Gravity.TOP | Gravity.START;
-        lp.x = prefs.getInt("x", 24);
-        lp.y = prefs.getInt("y", 80);
-
-        root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-
-        Button menu = new Button(this);
-        menu.setText("☰ Grimlite");
-        menu.setAllCaps(false);
-        menu.setTextColor(Color.WHITE);
-        menu.setBackgroundColor(Color.rgb(242, 140, 40));
-        menu.setTextSize(16);
-        menu.setPadding(20, 16, 20, 16);
-        LinearLayout.LayoutParams menuLp = new LinearLayout.LayoutParams(260, -2);
-        menuLp.setMargins(0, 0, 0, 8);
-        root.addView(menu, menuLp);
-
-        panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(20, 20, 20, 20);
-        panel.setBackgroundColor(Color.argb(240, 18, 18, 18));
-        panel.setVisibility(View.GONE);
-        root.addView(panel, new LinearLayout.LayoutParams(980, -2));
-
-        TextView title = text("Grimlite Rev - Script Executor", 18, true);
-        panel.addView(title);
-
-        status = text("Status: " + prefs.getString("status", "Stopped"), 14, false);
-        panel.addView(status);
-
-        LinearLayout landscapeRow = new LinearLayout(this);
-        landscapeRow.setOrientation(LinearLayout.HORIZONTAL);
-        panel.addView(landscapeRow, new LinearLayout.LayoutParams(-1, -2));
-
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.VERTICAL);
-        landscapeRow.addView(controls, new LinearLayout.LayoutParams(280, -2));
-
-        addButton(controls, "Load .gbot", v -> openLoader());
-        addButton(controls, "Reload Script", v -> { reloadScript(); saveStatus("Reloaded"); });
-        addButton(controls, "Start Script", v -> {
-            reloadExecutor();
-            if (BotAccessibilityService.getInstance() == null) {
-                saveStatus("ERROR: Accessibility not enabled!");
-                Toast.makeText(this, "Enable Grimlite Bot Accessibility Service in Settings", Toast.LENGTH_LONG).show();
-                return;
-            }
-            executor.start();
+            Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show();
+            finish();
         });
-        addButton(controls, "Stop", v -> executor.stop("Stopped by user"));
-        addButton(controls, "Next Command", v -> executor.next());
-        addButton(controls, "Test Tap", v -> testTap());
-        addButton(controls, "Set Coords", v -> openCoordSetup());
-        addButton(controls, "Diagnostics", v -> showDiagnostics());
-        addButton(controls, "Save Config", v -> saveConfig());
-        addButton(controls, "Hide", v -> panel.setVisibility(View.GONE));
+        root.addView(save);
 
-        LinearLayout scriptPanel = new LinearLayout(this);
-        scriptPanel.setOrientation(LinearLayout.VERTICAL);
-        scriptPanel.setPadding(16, 0, 0, 0);
-        landscapeRow.addView(scriptPanel, new LinearLayout.LayoutParams(660, -2));
-
-        scriptHeader = text("No script loaded", 14, true);
-        scriptPanel.addView(scriptHeader);
-
-        currentCommand = text("Current: -", 13, false);
-        currentCommand.setTextColor(Color.rgb(255, 220, 160));
-        scriptPanel.addView(currentCommand);
-
-        ScrollView previewScroll = new ScrollView(this);
-        scriptPreview = text("Use Load .gbot to select a Grimlite .gbot file.", 12, false);
-        scriptPreview.setTextIsSelectable(false);
-        previewScroll.addView(scriptPreview);
-        scriptPanel.addView(previewScroll, new LinearLayout.LayoutParams(640, 340));
-
-        refreshScriptViews();
-        menu.setOnClickListener(v -> panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
-        makeDraggable(menu, lp);
-
-        try {
-            wm.addView(root, lp);
-            isOverlayActive = true;
-            Log.i(TAG, "Overlay view added successfully");
-        } catch (Exception e) {
-            Log.e(TAG, "wm.addView failed", e);
-            throw e;
-        }
+        Button back = new Button(this);
+        back.setText("Back");
+        back.setOnClickListener(v -> finish());
+        root.addView(back);
     }
 
-    private void testTap() {
-        int[] testCoord = coordMap.get("attack");
-        if (testCoord[0] < 0) {
-            saveStatus("Test Tap: attack coords not set!");
-            Toast.makeText(this, "Set 'attack' coordinates first in Set Coords", Toast.LENGTH_LONG).show();
-            return;
-        }
-        saveStatus("Test Tap at (" + testCoord[0] + "," + testCoord[1] + ")...");
-        BotAccessibilityService svc = BotAccessibilityService.getInstance();
-        if (svc != null && svc.getInteractor() != null) {
-            svc.getInteractor().tap(testCoord[0], testCoord[1]);
-            handler.postDelayed(() -> saveStatus("Test Tap done — check if AQW reacted"), 500);
-        } else {
-            saveStatus("Test Tap FAILED: accessibility not connected");
-            Toast.makeText(this, "Accessibility service not connected!", Toast.LENGTH_LONG).show();
-        }
+    private LinearLayout makeCoordRow(String action, int x, int y) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, 8, 0, 8);
+
+        TextView label = new TextView(this);
+        label.setText(action + ":");
+        label.setWidth(180);
+        row.addView(label);
+
+        EditText ex = new EditText(this);
+        ex.setHint("X");
+        ex.setText(x >= 0 ? String.valueOf(x) : "");
+        ex.setWidth(200);
+        row.addView(ex);
+
+        EditText ey = new EditText(this);
+        ey.setHint("Y");
+        ey.setText(y >= 0 ? String.valueOf(y) : "");
+        ey.setWidth(200);
+        row.addView(ey);
+
+        return row;
     }
 
-    private void showDiagnostics() {
-        String diag = DiagnosticsHelper.getDiagnostics(this);
-        scriptPreview.setText(diag);
-        saveStatus("Diagnostics displayed");
+    private int parseInt(String s, int fallback) {
+        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return fallback; }
     }
 
-    private void openCoordSetup() {
-        Intent i = new Intent(this, MainActivity.class);
-        i.setAction("coord_setup");
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startActivity(i);
-    }
-
-    private void makeDraggable(View drag, WindowManager.LayoutParams lp) {
-        final int[] startX = new int[1], startY = new int[1];
-        final float[] touchX = new float[1], touchY = new float[1];
-        drag.setOnTouchListener((v, e) -> {
-            switch (e.getAction()) {
-                case MotionEvent.ACTION_DOWN:
-                    startX[0] = lp.x; startY[0] = lp.y;
-                    touchX[0] = e.getRawX(); touchY[0] = e.getRawY();
-                    return false;
-                case MotionEvent.ACTION_MOVE:
-                    lp.x = startX[0] + (int)(e.getRawX() - touchX[0]);
-                    lp.y = startY[0] + (int)(e.getRawY() - touchY[0]);
-                    try {
-                        if (wm != null && root != null && root.getParent() != null) {
-                            wm.updateViewLayout(root, lp);
-                            prefs.edit().putInt("x", lp.x).putInt("y", lp.y).apply();
-                        }
-                    } catch (Exception ex) {
-                        Log.e(TAG, "Drag update failed", ex);
-                    }
-                    return true;
-            }
-            return false;
-        });
-    }
-
-    private TextView text(String s, int sp, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(s);
-        t.setTextSize(sp);
-        t.setTextColor(Color.WHITE);
-        t.setPadding(4, 5, 4, 5);
-        if (bold) t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        return t;
-    }
-
-    private void addButton(LinearLayout parent, String label, View.OnClickListener l) {
+    private Button btn(String s, android.view.View.OnClickListener l) {
         Button b = new Button(this);
-        b.setText(label);
+        b.setText(s);
         b.setAllCaps(false);
         b.setOnClickListener(l);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.setMargins(0, 4, 0, 4);
-        parent.addView(b, lp);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1f);
+        lp.setMargins(6, 8, 6, 8);
+        b.setLayoutParams(lp);
+        return b;
     }
 
-    private void openLoader() {
-        Intent i = new Intent(this, MainActivity.class);
-        i.setAction("load_gbot");
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startActivity(i);
-        saveStatus("Opening .gbot picker");
-    }
-
-    private void reloadScript() {
-        loadScriptIntoExecutor();
-        refreshScriptViews();
-    }
-
-    private void refreshScriptViews() {
-        if (scriptHeader == null) return;
-        String name = prefs.getString("scriptName", "No .gbot loaded");
-        int lines = prefs.getInt("scriptLineCount", 0);
-        scriptHeader.setText("Script: " + name + " | Lines: " + lines);
-        scriptPreview.setText(buildPreview());
-        currentCommand.setText("Current: -");
-    }
-
-    private String buildPreview() {
-        if (executor == null) return "No executor.";
-        GbotScript script = getScriptFromExecutor();
-        if (script == null || script.commands.isEmpty()) return "No commands loaded. Tap Load .gbot.";
-        StringBuilder sb = new StringBuilder();
-        int max = Math.min(script.commands.size(), 80);
-        for (int i = 0; i < max; i++) {
-            sb.append(String.format(Locale.US, "%03d %s", i + 1, script.commands.get(i).raw));
-            sb.append('\n');
+    private void openAqwPocket() {
+        String[] pkgs = {"air.AQWPocket", "air.com.aqwpocket", "com.aqwpocket", "com.anthonyhyo.aqwpocket"};
+        for (String p : pkgs) {
+            Intent launch = getPackageManager().getLaunchIntentForPackage(p);
+            if (launch != null) { startActivity(launch); return; }
         }
-        if (script.commands.size() > max) sb.append("... ").append(script.commands.size() - max).append(" more commands");
-        return sb.toString();
+        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/anthony-hyo/aqw-mobile/releases/latest")));
     }
-
-    private GbotScript getScriptFromExecutor() {
-        String scriptText = prefs.getString("script", "");
-        String scriptName = prefs.getString("scriptName", "unnamed");
-        if (scriptText.isEmpty()) return null;
-        return GbotParser.parse(scriptName, scriptText);
-    }
-
-    private void reloadExecutor() {
-        GameInteractor interactor = null;
-        BotAccessibilityService svc = BotAccessibilityService.getInstance();
-        if (svc != null && svc.getInteractor() != null) {
-            interactor = svc.getInteractor();
-            Log.i(TAG, "Using REAL accessibility interactor");
-        } else {
-            Log.w(TAG, "Accessibility service NOT connected — using DUMMY mode");
-        }
-
-        if (interactor == null) {
-            interactor = new GameInteractor() {
-                @Override public void tap(int x, int y) { logAction("TAP", x + "," + y); }
-                @Override public void swipe(int x1, int y1, int x2, int y2, int d) { logAction("SWIPE", x1 + "," + y1); }
-                @Override public void longPress(int x, int y, int d) { logAction("LONG", x + "," + y); }
-                @Override public void kill(String m) { logAction("KILL", m); }
-                @Override public void join(String m) { logAction("JOIN", m); }
-                @Override public void acceptQuest(String q) { logAction("ACCEPT", q); }
-                @Override public void turnInQuest(String q) { logAction("TURNIN", q); }
-                @Override public void rest() { logAction("REST", ""); }
-                @Override public void useSkill(int s) { logAction("SKILL", String.valueOf(s)); }
-                @Override public void move(int x, int y) { logAction("MOVE", x + "," + y); }
-                @Override public void buy(String i) { logAction("BUY", i); }
-                @Override public void sell(String i) { logAction("SELL", i); }
-                @Override public void equip(String i) { logAction("EQUIP", i); }
-                @Override public void unequip(String i) { logAction("UNEQUIP", i); }
-                @Override public boolean getState(String k) { return false; }
-                private void logAction(String a, String b) {
-                    handler.post(() -> saveStatus("[DUMMY " + a + "] " + b));
-                }
-            };
-        }
-
-        if (executor == null) {
-            executor = new ScriptExecutor(interactor);
-            executor.setCallback(this);
-        } else {
-            executor.stop("Reloading");
-        }
-        loadScriptIntoExecutor();
-    }
-
-    private void loadScriptIntoExecutor() {
-        String scriptText = prefs.getString("script", "");
-        String scriptName = prefs.getString("scriptName", "unnamed");
-        if (!scriptText.isEmpty()) {
-            GbotScript script = GbotParser.parse(scriptName, scriptText);
-            executor.load(script);
-        }
-    }
-
-    @Override public void onStatus(String s) { saveStatus(s); }
-    @Override public void onCommand(int idx, String raw) {
-        currentCommand.setText("Current [" + idx + "]: " + raw);
-    }
-    @Override public void onFinished(String reason) {
-        saveStatus("Finished: " + reason);
-        currentCommand.setText("Current: -");
-    }
-
-    private void saveStatus(String s) {
-        if (status != null) status.setText("Status: " + s);
-        prefs.edit().putString("status", s).apply();
-        Log.d(TAG, "Status: " + s);
-    }
-
-    private void saveConfig() {
-        if (status != null) {
-            prefs.edit().putString("status", status.getText().toString().replace("Status: ", "")).apply();
-        }
-        saveStatus("Saved");
-    }
-
-    @Override public void onDestroy() {
-        Log.i(TAG, "onDestroy");
-        isOverlayActive = false;
-        if (executor != null) {
-            executor.stop("Service destroyed");
-            executor = null;
-        }
-        if (handler != null) handler.removeCallbacksAndMessages(null);
-        if (wm != null && root != null && root.getParent() != null) {
-            try {
-                wm.removeView(root);
-            } catch (Exception e) {
-                Log.e(TAG, "removeView failed in onDestroy", e);
-            }
-        }
-        root = null;
-        panel = null;
-        super.onDestroy();
-    }
-
-    @Override public IBinder onBind(Intent intent) { return null; }
 }

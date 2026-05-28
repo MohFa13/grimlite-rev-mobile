@@ -1,49 +1,128 @@
 package com.grimliterev.overlay;
 
+import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
-import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
-import android.provider.Settings;
-import android.view.accessibility.AccessibilityManager;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import android.view.accessibility.AccessibilityEvent;
 
+import com.grimliterev.overlay.game.AccessibilityGameInteractor;
 import com.grimliterev.overlay.game.CoordinateMap;
+import com.grimliterev.overlay.gbot.GbotParser;
+import com.grimliterev.overlay.gbot.GbotScript;
+import com.grimliterev.overlay.gbot.ScriptExecutor;
 
-import java.util.List;
+public class BotAccessibilityService extends AccessibilityService implements ScriptExecutor.Callback {
+    private static final String TAG = "BotAccessibilityService";
+    private static BotAccessibilityService instance;
+    private AccessibilityGameInteractor interactor;
+    private ScriptExecutor executor;
+    private Handler handler = new Handler(Looper.getMainLooper());
+    private SharedPreferences prefs;
+    private boolean aqwForeground = false;
+    private boolean popupShowing = false;
+    private long lastPopupTime = 0;
 
-public class DiagnosticsHelper {
+    public static BotAccessibilityService getInstance() { return instance; }
+    public AccessibilityGameInteractor getInteractor() { return interactor; }
+    public ScriptExecutor getExecutor() { return executor; }
+    public boolean isAqwForeground() { return aqwForeground; }
 
-    public static boolean isOverlayAllowed(Context ctx) {
-        return Settings.canDrawOverlays(ctx);
+    @Override
+    protected void onServiceConnected() {
+        super.onServiceConnected();
+        instance = this;
+        Log.i(TAG, "Accessibility service connected");
+        prefs = getSharedPreferences("grimlite_overlay", MODE_PRIVATE);
+        CoordinateMap coords = new CoordinateMap(prefs);
+        interactor = new AccessibilityGameInteractor(this, coords);
+        executor = new ScriptExecutor(interactor);
+        executor.setCallback(this);
+        loadScript();
+
+        AccessibilityServiceInfo info = getServiceInfo();
+        if (info == null) info = new AccessibilityServiceInfo();
+        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
+        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
+        info.flags = AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE;
+        info.packageNames = new String[]{"air.AQWPocket", "air.com.aqwpocket", "com.aqwpocket", "com.anthonyhyo.aqwpocket"};
+        setServiceInfo(info);
     }
 
-    public static boolean isAccessibilityEnabled(Context ctx) {
-        AccessibilityManager am = (AccessibilityManager) ctx.getSystemService(Context.ACCESSIBILITY_SERVICE);
-        if (am == null) return false;
-        List<AccessibilityServiceInfo> services = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK);
-        if (services == null) return false;
-        String myId = ctx.getPackageName() + "/.BotAccessibilityService";
-        for (AccessibilityServiceInfo info : services) {
-            if (info.getId().contains(myId) || info.getId().contains("BotAccessibilityService")) {
-                return true;
+    @Override
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            CharSequence pkg = event.getPackageName();
+            if (pkg == null) return;
+            String pkgName = pkg.toString();
+            boolean isAqw = pkgName.contains("AQWPocket") || pkgName.contains("aqwpocket");
+            if (isAqw && !aqwForeground) {
+                aqwForeground = true;
+                Log.i(TAG, "AQW Pocket opened");
+                showPopup();
+            } else if (!isAqw && aqwForeground) {
+                aqwForeground = false;
+                Log.i(TAG, "AQW Pocket closed");
             }
         }
-        return false;
     }
 
-    public static String getDiagnostics(Context ctx) {
-        SharedPreferences prefs = ctx.getSharedPreferences("grimlite_overlay", Context.MODE_PRIVATE);
-        CoordinateMap map = new CoordinateMap(prefs);
-        StringBuilder sb = new StringBuilder();
-        sb.append("Overlay Permission: ").append(isOverlayAllowed(ctx) ? "GRANTED" : "DENIED").append("\n");
-        sb.append("Accessibility Service: ").append(isAccessibilityEnabled(ctx) ? "ENABLED" : "DISABLED").append("\n");
-        sb.append("Script Loaded: ").append(prefs.getString("scriptName", "None")).append("\n");
-        sb.append("Coordinates Set:\n");
-        String[] keys = {"attack","skill1","skill2","skill3","skill4","rest","menu","join","confirm","quest","accept","turnin"};
-        for (String k : keys) {
-            int[] p = map.get(k);
-            sb.append("  ").append(k).append(": ")
-              .append(p[0] >= 0 ? "(" + p[0] + "," + p[1] + ")" : "NOT SET").append("\n");
+    private void showPopup() {
+        long now = System.currentTimeMillis();
+        if (now - lastPopupTime < 2000) return; // debounce
+        lastPopupTime = now;
+        try {
+            Intent intent = new Intent(this, PopupActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+            startActivity(intent);
+            popupShowing = true;
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to launch popup", e);
         }
-        return sb.toString();
+    }
+
+    public void loadScript() {
+        String text = prefs.getString("script", "");
+        String name = prefs.getString("scriptName", "unnamed");
+        if (!text.isEmpty()) {
+            GbotScript script = GbotParser.parse(name, text);
+            if (executor != null) executor.load(script);
+        }
+    }
+
+    public void startScript() {
+        if (executor != null) executor.start();
+    }
+
+    public void stopScript() {
+        if (executor != null) executor.stop("Stopped");
+    }
+
+    public void nextCommand() {
+        if (executor != null) executor.next();
+    }
+
+    @Override public void onStatus(String s) {
+        Log.d(TAG, "Status: " + s);
+    }
+    @Override public void onCommand(int idx, String raw) {
+        Log.d(TAG, "Cmd [" + idx + "]: " + raw);
+    }
+    @Override public void onFinished(String reason) {
+        Log.d(TAG, "Finished: " + reason);
+    }
+
+    @Override public void onInterrupt() {
+        Log.w(TAG, "Interrupted");
+    }
+
+    @Override public void onDestroy() {
+        Log.w(TAG, "Destroyed");
+        if (executor != null) executor.stop("Service destroyed");
+        instance = null;
+        super.onDestroy();
     }
 }
