@@ -1,0 +1,352 @@
+package com.grimliterev.overlay;
+
+import android.app.*;
+import android.content.*;
+import android.graphics.Color;
+import android.graphics.PixelFormat;
+import android.os.Build;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
+import android.provider.Settings;
+import android.util.Log;
+import android.view.*;
+import android.widget.*;
+
+import com.grimliterev.overlay.gbot.*;
+import com.grimliterev.overlay.game.*;
+
+import java.util.Locale;
+
+public class OverlayService extends Service implements ScriptExecutor.Callback {
+    private static final String TAG = "OverlayService";
+    private WindowManager wm;
+    private LinearLayout root;
+    private LinearLayout panel;
+    private TextView status;
+    private TextView scriptHeader;
+    private TextView scriptPreview;
+    private TextView currentCommand;
+    private SharedPreferences prefs;
+    private Handler handler;
+
+    private ScriptExecutor executor;
+    private CoordinateMap coordMap;
+
+    @Override public void onCreate() {
+        super.onCreate();
+        prefs = getSharedPreferences("grimlite_overlay", MODE_PRIVATE);
+        handler = new Handler(Looper.getMainLooper());
+        coordMap = new CoordinateMap(prefs);
+
+        if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
+            Log.e(TAG, "Overlay permission NOT granted — service aborting");
+            Toast.makeText(this, "Overlay permission required! Open the app and grant it.", Toast.LENGTH_LONG).show();
+            stopSelf();
+            return;
+        }
+
+        startForegroundCompat();
+        createOverlay();
+        reloadExecutor();
+    }
+
+    private void reloadExecutor() {
+        GameInteractor interactor = null;
+        BotAccessibilityService svc = BotAccessibilityService.getInstance();
+        if (svc != null && svc.getInteractor() != null) {
+            interactor = svc.getInteractor();
+            Log.i(TAG, "Using REAL accessibility interactor");
+        } else {
+            Log.w(TAG, "Accessibility service NOT connected — using DUMMY mode (no real taps)");
+        }
+
+        if (interactor == null) {
+            interactor = new GameInteractor() {
+                @Override public void tap(int x, int y) { logAction("TAP", x + "," + y); }
+                @Override public void swipe(int x1, int y1, int x2, int y2, int d) { logAction("SWIPE", x1 + "," + y1); }
+                @Override public void longPress(int x, int y, int d) { logAction("LONG", x + "," + y); }
+                @Override public void kill(String m) { logAction("KILL", m); }
+                @Override public void join(String m) { logAction("JOIN", m); }
+                @Override public void acceptQuest(String q) { logAction("ACCEPT", q); }
+                @Override public void turnInQuest(String q) { logAction("TURNIN", q); }
+                @Override public void rest() { logAction("REST", ""); }
+                @Override public void useSkill(int s) { logAction("SKILL", String.valueOf(s)); }
+                @Override public void move(int x, int y) { logAction("MOVE", x + "," + y); }
+                @Override public void buy(String i) { logAction("BUY", i); }
+                @Override public void sell(String i) { logAction("SELL", i); }
+                @Override public void equip(String i) { logAction("EQUIP", i); }
+                @Override public void unequip(String i) { logAction("UNEQUIP", i); }
+                @Override public boolean getState(String k) { return false; }
+                private void logAction(String a, String b) {
+                    handler.post(() -> saveStatus("[DUMMY " + a + "] " + b));
+                }
+            };
+        }
+
+        executor = new ScriptExecutor(interactor);
+        executor.setCallback(this);
+        loadScriptIntoExecutor();
+    }
+
+    private void loadScriptIntoExecutor() {
+        String scriptText = prefs.getString("script", "");
+        String scriptName = prefs.getString("scriptName", "unnamed");
+        if (!scriptText.isEmpty()) {
+            GbotScript script = GbotParser.parse(scriptName, scriptText);
+            executor.load(script);
+        }
+    }
+
+    private void startForegroundCompat() {
+        String id = "grimlite_overlay";
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationChannel ch = new NotificationChannel(id, "Grimlite Overlay", NotificationManager.IMPORTANCE_LOW);
+            getSystemService(NotificationManager.class).createNotificationChannel(ch);
+        }
+        Notification.Builder b = Build.VERSION.SDK_INT >= 26
+            ? new Notification.Builder(this, id)
+            : new Notification.Builder(this);
+        b.setContentTitle("Grimlite Overlay running")
+         .setContentText("Floating .gbot script panel is active")
+         .setSmallIcon(android.R.drawable.ic_menu_manage);
+        startForeground(1337, b.build());
+    }
+
+    private void createOverlay() {
+        wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+        int type = Build.VERSION.SDK_INT >= 26
+            ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            : WindowManager.LayoutParams.TYPE_PHONE;
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        );
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.x = prefs.getInt("x", 24);
+        lp.y = prefs.getInt("y", 80);
+
+        root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+
+        // Larger, more visible menu button
+        Button menu = new Button(this);
+        menu.setText("☰ Grimlite");
+        menu.setAllCaps(false);
+        menu.setTextColor(Color.WHITE);
+        menu.setBackgroundColor(Color.rgb(242, 140, 40));
+        menu.setTextSize(16);
+        menu.setPadding(20, 16, 20, 16);
+        LinearLayout.LayoutParams menuLp = new LinearLayout.LayoutParams(260, -2);
+        menuLp.setMargins(0, 0, 0, 8);
+        root.addView(menu, menuLp);
+
+        panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(20, 20, 20, 20);
+        panel.setBackgroundColor(Color.argb(240, 18, 18, 18));
+        panel.setVisibility(View.GONE);
+        root.addView(panel, new LinearLayout.LayoutParams(980, -2));
+
+        TextView title = text("Grimlite Rev - Script Executor", 18, true);
+        panel.addView(title);
+
+        status = text("Status: " + prefs.getString("status", "Stopped"), 14, false);
+        panel.addView(status);
+
+        LinearLayout landscapeRow = new LinearLayout(this);
+        landscapeRow.setOrientation(LinearLayout.HORIZONTAL);
+        panel.addView(landscapeRow, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.VERTICAL);
+        landscapeRow.addView(controls, new LinearLayout.LayoutParams(280, -2));
+
+        addButton(controls, "Load .gbot", v -> openLoader());
+        addButton(controls, "Reload Script", v -> { reloadScript(); saveStatus("Reloaded"); });
+        addButton(controls, "Start Script", v -> {
+            reloadExecutor();
+            if (BotAccessibilityService.getInstance() == null) {
+                saveStatus("ERROR: Accessibility not enabled!");
+                Toast.makeText(this, "Enable Grimlite Bot Accessibility Service in Settings", Toast.LENGTH_LONG).show();
+                return;
+            }
+            executor.start();
+        });
+        addButton(controls, "Stop", v -> executor.stop("Stopped by user"));
+        addButton(controls, "Next Command", v -> executor.next());
+        addButton(controls, "Test Tap", v -> testTap());
+        addButton(controls, "Set Coords", v -> openCoordSetup());
+        addButton(controls, "Diagnostics", v -> showDiagnostics());
+        addButton(controls, "Save Config", v -> saveConfig());
+        addButton(controls, "Hide", v -> panel.setVisibility(View.GONE));
+
+        LinearLayout scriptPanel = new LinearLayout(this);
+        scriptPanel.setOrientation(LinearLayout.VERTICAL);
+        scriptPanel.setPadding(16, 0, 0, 0);
+        landscapeRow.addView(scriptPanel, new LinearLayout.LayoutParams(660, -2));
+
+        scriptHeader = text("No script loaded", 14, true);
+        scriptPanel.addView(scriptHeader);
+
+        currentCommand = text("Current: -", 13, false);
+        currentCommand.setTextColor(Color.rgb(255, 220, 160));
+        scriptPanel.addView(currentCommand);
+
+        ScrollView previewScroll = new ScrollView(this);
+        scriptPreview = text("Use Load .gbot to select a Grimlite .gbot file.", 12, false);
+        scriptPreview.setTextIsSelectable(false);
+        previewScroll.addView(scriptPreview);
+        scriptPanel.addView(previewScroll, new LinearLayout.LayoutParams(640, 340));
+
+        refreshScriptViews();
+        menu.setOnClickListener(v -> panel.setVisibility(panel.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+        makeDraggable(menu, lp);
+        wm.addView(root, lp);
+    }
+
+    private void testTap() {
+        int[] testCoord = coordMap.get("attack");
+        if (testCoord[0] < 0) {
+            saveStatus("Test Tap: attack coords not set!");
+            Toast.makeText(this, "Set 'attack' coordinates first in Set Coords", Toast.LENGTH_LONG).show();
+            return;
+        }
+        saveStatus("Test Tap at (" + testCoord[0] + "," + testCoord[1] + ")...");
+        BotAccessibilityService svc = BotAccessibilityService.getInstance();
+        if (svc != null && svc.getInteractor() != null) {
+            svc.getInteractor().tap(testCoord[0], testCoord[1]);
+            handler.postDelayed(() -> saveStatus("Test Tap done — check if AQW reacted"), 500);
+        } else {
+            saveStatus("Test Tap FAILED: accessibility not connected");
+            Toast.makeText(this, "Accessibility service not connected!", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void showDiagnostics() {
+        String diag = DiagnosticsHelper.getDiagnostics(this);
+        scriptPreview.setText(diag);
+        saveStatus("Diagnostics displayed");
+    }
+
+    private void openCoordSetup() {
+        Intent i = new Intent(this, MainActivity.class);
+        i.setAction("coord_setup");
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(i);
+    }
+
+    private void makeDraggable(View drag, WindowManager.LayoutParams lp) {
+        final int[] startX = new int[1], startY = new int[1];
+        final float[] touchX = new float[1], touchY = new float[1];
+        drag.setOnTouchListener((v, e) -> {
+            switch (e.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    startX[0] = lp.x; startY[0] = lp.y;
+                    touchX[0] = e.getRawX(); touchY[0] = e.getRawY();
+                    return false;
+                case MotionEvent.ACTION_MOVE:
+                    lp.x = startX[0] + (int)(e.getRawX() - touchX[0]);
+                    lp.y = startY[0] + (int)(e.getRawY() - touchY[0]);
+                    wm.updateViewLayout(root, lp);
+                    prefs.edit().putInt("x", lp.x).putInt("y", lp.y).apply();
+                    return true;
+            }
+            return false;
+        });
+    }
+
+    private TextView text(String s, int sp, boolean bold) {
+        TextView t = new TextView(this);
+        t.setText(s);
+        t.setTextSize(sp);
+        t.setTextColor(Color.WHITE);
+        t.setPadding(4, 5, 4, 5);
+        if (bold) t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        return t;
+    }
+
+    private void addButton(LinearLayout parent, String label, View.OnClickListener l) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setOnClickListener(l);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, 4, 0, 4);
+        parent.addView(b, lp);
+    }
+
+    private void openLoader() {
+        Intent i = new Intent(this, MainActivity.class);
+        i.setAction("load_gbot");
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(i);
+        saveStatus("Opening .gbot picker");
+    }
+
+    private void reloadScript() {
+        loadScriptIntoExecutor();
+        refreshScriptViews();
+    }
+
+    private void refreshScriptViews() {
+        if (scriptHeader == null) return;
+        String name = prefs.getString("scriptName", "No .gbot loaded");
+        int lines = prefs.getInt("scriptLineCount", 0);
+        scriptHeader.setText("Script: " + name + " | Lines: " + lines);
+        scriptPreview.setText(buildPreview());
+        currentCommand.setText("Current: -");
+    }
+
+    private String buildPreview() {
+        if (executor == null) return "No executor.";
+        GbotScript script = getScriptFromExecutor();
+        if (script == null || script.commands.isEmpty()) return "No commands loaded. Tap Load .gbot.";
+        StringBuilder sb = new StringBuilder();
+        int max = Math.min(script.commands.size(), 80);
+        for (int i = 0; i < max; i++) {
+            sb.append(String.format(Locale.US, "%03d %s", i + 1, script.commands.get(i).raw));
+            sb.append('\n');
+        }
+        if (script.commands.size() > max) sb.append("... ").append(script.commands.size() - max).append(" more commands");
+        return sb.toString();
+    }
+
+    private GbotScript getScriptFromExecutor() {
+        String scriptText = prefs.getString("script", "");
+        String scriptName = prefs.getString("scriptName", "unnamed");
+        if (scriptText.isEmpty()) return null;
+        return GbotParser.parse(scriptName, scriptText);
+    }
+
+    @Override public void onStatus(String s) { saveStatus(s); }
+    @Override public void onCommand(int idx, String raw) {
+        currentCommand.setText("Current [" + idx + "]: " + raw);
+    }
+    @Override public void onFinished(String reason) {
+        saveStatus("Finished: " + reason);
+        currentCommand.setText("Current: -");
+    }
+
+    private void saveStatus(String s) {
+        if (status != null) status.setText("Status: " + s);
+        prefs.edit().putString("status", s).apply();
+        Log.d(TAG, "Status: " + s);
+    }
+
+    private void saveConfig() {
+        prefs.edit().putString("status", status.getText().toString().replace("Status: ", "")).apply();
+        saveStatus("Saved");
+    }
+
+    @Override public void onDestroy() {
+        if (executor != null) executor.stop("Service destroyed");
+        if (handler != null) handler.removeCallbacksAndMessages(null);
+        if (wm != null && root != null) wm.removeView(root);
+        super.onDestroy();
+    }
+    @Override public IBinder onBind(Intent intent) { return null; }
+}
